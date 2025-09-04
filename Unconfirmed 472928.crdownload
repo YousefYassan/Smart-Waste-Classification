@@ -1,0 +1,238 @@
+import streamlit as st
+from PIL import Image
+import numpy as np
+import io
+import os
+
+# Try to import TensorFlow when available
+try:
+    import tensorflow as tf
+    from tensorflow.keras.models import load_model
+except Exception:
+    tf = None
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MOBILENET_PATH = os.path.join(BASE_DIR, "Deep Learning & CNNs", "MobileNetV2.h5")
+CUSTOMCNN_PATH = os.path.join(BASE_DIR, "Deep Learning & CNNs", "custom_CNN.h5")
+CLASS_NAMES = ["cardboard","glass","metal","paper","plastic","trash"]
+
+# Add explicit sample images provided by the user
+SAMPLE_IMAGES = {
+    'plastic104': '/Users/mac/Desktop/Smart Waste Classification and Recycling Assistant/plastic104.jpg',
+    'metal102': '/Users/mac/Desktop/Smart Waste Classification and Recycling Assistant/metal102.jpg',
+    'glass100': '/Users/mac/Desktop/Smart Waste Classification and Recycling Assistant/glass100.jpg'
+}
+
+st.set_page_config(page_title="Waste Classification (MobileNetV2 & Custom CNN)", layout='wide', initial_sidebar_state='expanded')
+
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
+@st.cache_resource
+def load_tf_model(path):
+    """Load a TensorFlow/Keras model from path and return (model, info_string)."""
+    if not tf:
+        return None, f"TensorFlow not available in environment."
+    if not os.path.exists(path):
+        return None, f"Model file not found: {path}"
+    try:
+        m = load_model(path)
+        stream = io.StringIO()
+        try:
+            m.summary(print_fn=lambda x: stream.write(x + "\n"))
+            info = stream.getvalue()
+        except Exception:
+            info = f"Model loaded from {path}. Could not obtain summary."
+        return m, info
+    except Exception as e:
+        return None, f"Error loading model: {e}"
+
+
+def preprocess_for_mobilenet(img: Image.Image):
+    img = img.convert('RGB').resize((224,224))
+    arr = np.array(img)/255.0
+    return np.expand_dims(arr, 0)
+
+
+def preprocess_for_custom(img: Image.Image):
+    img = img.convert('RGB').resize((150,150))
+    arr = np.array(img)/255.0
+    return np.expand_dims(arr, 0)
+
+# -----------------------------------------------------------------------------
+# App helpers
+# -----------------------------------------------------------------------------
+
+def display_model_status():
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("Loaded models")
+    mob_ok = '✅' if st.session_state.get('mob_model') is not None else '❌'
+    cust_ok = '✅' if st.session_state.get('custom_model') is not None else '❌'
+    st.sidebar.write(f"MobileNetV2: {mob_ok}")
+    st.sidebar.write(f"Custom CNN: {cust_ok}")
+
+
+def safe_load_tf(path, key_name):
+    with st.spinner(f"Loading {key_name}..."):
+        model, info = load_tf_model(path)
+        st.session_state[key_name] = model
+        st.session_state[f"{key_name}_info"] = info
+    return model, info
+
+
+def classify_and_display(tf_model, pil_image, preprocess_fn, class_names, model_label):
+    try:
+        x = preprocess_fn(pil_image)
+        with st.spinner(f"Running {model_label} inference..."):
+            preds = tf_model.predict(x)
+        top_idx = int(np.argmax(preds[0]))
+        label = class_names[top_idx] if top_idx < len(class_names) else str(top_idx)
+        st.markdown(f"**Predicted ({model_label}):** {label}")
+        st.write("Probabilities:")
+        for i,p in enumerate(preds[0]):
+            name = class_names[i] if i < len(class_names) else str(i)
+            st.write(f"- {name}: {p:.3f}")
+    except Exception as e:
+        st.error(f"{model_label} inference error: {e}")
+
+# Initialize session state entries if missing
+for k in ['mob_model','custom_model','mob_model_info','custom_model_info']:
+    if k not in st.session_state:
+        st.session_state[k] = None
+
+# -----------------------------------------------------------------------------
+# UI layout
+# -----------------------------------------------------------------------------
+
+# Header
+h1, h2 = st.columns([1,6])
+with h1:
+    st.image("/Users/mac/Desktop/Smart Waste Classification and Recycling Assistant/classification-writting-on-table-background-260nw-2419668331.webp", width=84)
+with h2:
+    st.markdown("""
+    <div style='padding:6px;'>
+    <h1 style='color:#294B8E; margin:0;'>Waste Classification & Model Explorer</h1>
+    <p style='color:#6b7280; margin:0;'>Streamlined demo: MobileNetV2 (transfer) and Custom CNN (from-scratch)</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Sidebar: configuration and model loader
+st.sidebar.header("Configuration")
+selected_modes = st.sidebar.multiselect("Choose tasks", ["MobileNetV2 (classify)", "Custom CNN (classify)"], default=["MobileNetV2 (classify)"])
+st.sidebar.markdown("---")
+st.sidebar.markdown("Author: Abdelrhman Wael Ahmeda")
+
+with st.sidebar.expander("Model loader & paths", expanded=True):
+    st.write(f"MobileNetV2 path: {MOBILENET_PATH}")
+    st.write(f"Custom CNN path: {CUSTOMCNN_PATH}")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Load MobileNetV2"):
+            mob_model, mob_info = safe_load_tf(MOBILENET_PATH, 'mob_model')
+            if mob_model:
+                st.success("MobileNetV2 loaded")
+            else:
+                st.error(mob_info)
+    with col2:
+        if st.button("Load Custom CNN"):
+            custom_model, custom_info = safe_load_tf(CUSTOMCNN_PATH, 'custom_model')
+            if custom_model:
+                st.success("Custom CNN loaded")
+            else:
+                st.error(custom_info)
+
+    display_model_status()
+
+# Main: tabs for Model Info and Inference
+tab_info, tab_run = st.tabs(["Model Information", "Run Inference"])
+
+with tab_info:
+    st.header("Model information & details")
+    info_tabs = st.tabs(["MobileNetV2", "Custom CNN", "Notes & Reproducibility"])
+
+    with info_tabs[0]:
+        st.subheader("MobileNetV2 (Transfer Learning)")
+        if st.session_state.get('mob_model_info'):
+            st.code(st.session_state['mob_model_info'][:2000])
+        else:
+            st.info("Model not loaded. Click 'Load MobileNetV2' in the sidebar to load the model from disk.")
+        st.markdown("**Model path**")
+        st.write(MOBILENET_PATH)
+        st.markdown("**Notes**")
+        st.write("MobileNetV2 is used with include_top=False in the notebook and a custom classifier head. Input resolution: 224x224.")
+
+    with info_tabs[1]:
+        st.subheader("Custom CNN (From scratch)")
+        if st.session_state.get('custom_model_info'):
+            st.code(st.session_state['custom_model_info'][:2000])
+        else:
+            st.info("Model not loaded. Click 'Load Custom CNN' in the sidebar to load the model from disk.")
+        st.markdown("**Model path**")
+        st.write(CUSTOMCNN_PATH)
+        st.markdown("**Notes**")
+        st.write("Custom convolutional model trained at 150x150 input resolution with several Conv/Pool layers and a Dense head.")
+
+    with info_tabs[2]:
+        st.subheader("Notes & Reproducibility")
+        st.markdown("**Required files**")
+        st.write("- MobileNetV2.h5 and custom_CNN.h5 in the 'Deep Learning & CNNs' folder")
+        st.write("- Original training notebook for details and exact preprocessing steps")
+        st.markdown("**Environment**")
+        st.write("TensorFlow, Keras, numpy, Pillow, scikit-learn, matplotlib are used. For GPU acceleration install the GPU-enabled TensorFlow build matching your CUDA/cuDNN.")
+
+with tab_run:
+    st.header("Run inference on a single image")
+    upload_col, sample_col = st.columns([3,1])
+    with upload_col:
+        uploaded = st.file_uploader("Upload image (jpg/png)", type=['jpg','jpeg','png'])
+    with sample_col:
+        sample_choice = st.selectbox("Sample images", options=['None'] + list(SAMPLE_IMAGES.keys()))
+ 
+    image = None
+    if uploaded:
+        image = Image.open(uploaded).convert('RGB')
+        st.image(image, caption='Uploaded image', use_column_width=True)
+    elif sample_choice and sample_choice != 'None':
+        sample_path = SAMPLE_IMAGES.get(sample_choice)
+        if sample_path and os.path.exists(sample_path):
+            image = Image.open(sample_path).convert('RGB')
+            st.image(image, caption=f'Sample: {sample_path}', use_column_width=True)
+        else:
+            st.info('Selected sample image not found on disk. Please check the path.')
+
+    if st.button("Run models"):
+        if image is None:
+            st.error("Please upload an image or use a sample image before running models.")
+        else:
+            if "MobileNetV2 (classify)" in selected_modes:
+                if st.session_state.get('mob_model') is None:
+                    st.info("MobileNetV2 not loaded. Attempting to load automatically...")
+                    mob_model, mob_info = safe_load_tf(MOBILENET_PATH, 'mob_model')
+                else:
+                    mob_model = st.session_state.get('mob_model')
+                if mob_model:
+                    st.subheader("MobileNetV2 results")
+                    classify_and_display(mob_model, image, preprocess_for_mobilenet, CLASS_NAMES, 'MobileNetV2')
+                else:
+                    st.error('MobileNetV2 unavailable')
+
+            if "Custom CNN (classify)" in selected_modes:
+                if st.session_state.get('custom_model') is None:
+                    st.info("Custom CNN not loaded. Attempting to load automatically...")
+                    custom_model, custom_info = safe_load_tf(CUSTOMCNN_PATH, 'custom_model')
+                else:
+                    custom_model = st.session_state.get('custom_model')
+                if custom_model:
+                    st.subheader("Custom CNN results")
+                    classify_and_display(custom_model, image, preprocess_for_custom, CLASS_NAMES, 'Custom CNN')
+                else:
+                    st.error('Custom CNN unavailable')
+
+# Footer
+st.markdown("---")
+st.write("Tips: Load models from the sidebar. If model loading fails, verify the .h5 files and Python/TensorFlow environment.")
+
+# End of app
